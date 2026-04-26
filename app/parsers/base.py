@@ -1,37 +1,30 @@
-"""Base classes for source parsers."""
+"""Base classes for harvester sources."""
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Tuple
 
 from app.core.http import HttpClient
 
 
-@dataclass
-class ParseTask:
-    """Per-run input passed to every parser."""
+class BaseSource(ABC):
+    """A source emits (item_id, row_dict) pairs.
 
-    keywords: List[str]
-    limit: int = 100  # max items per parser
-    extra: Optional[Dict[str, Any]] = None  # source-specific overrides
-
-    def opt(self, key: str, default: Any = None) -> Any:
-        if self.extra is None:
-            return default
-        return self.extra.get(key, default)
-
-
-class BaseParser(ABC):
-    """All parsers implement an async generator that yields dict rows."""
+    item_id must be stable across runs (e.g. AppID for Steam, AssetID for
+    Roblox) so dedup works correctly. Each call to `tick()` performs one
+    sweep over the source — the harvester invokes `tick` repeatedly with
+    the configured interval.
+    """
 
     name: str = "base"
     columns: List[str] = ["title", "url"]
+    interval: float = 600.0  # seconds between successive ticks for this source
+    display: str = ""
 
     def __init__(self, http: HttpClient) -> None:
         self.http = http
 
     @abstractmethod
-    def fetch(self, task: ParseTask) -> AsyncIterator[Dict[str, Any]]:
-        """Yield row dicts. Must be an async generator."""
+    def tick(self) -> AsyncIterator[Tuple[str, Dict[str, Any]]]:
+        """Async-generate (id, row) pairs for one sweep."""
         raise NotImplementedError
