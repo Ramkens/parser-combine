@@ -24,8 +24,8 @@ class Config:
     admin_tg_id: int = field(default_factory=lambda: _int("ADMIN_TG_ID", 0))
     port: int = field(default_factory=lambda: _int("PORT", 10000))
     log_level: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO").upper())
-    http_concurrency: int = field(default_factory=lambda: _int("HTTP_CONCURRENCY", 6))
-    http_rps: float = field(default_factory=lambda: float(os.getenv("HTTP_RPS", "4") or 4))
+    http_concurrency: int = field(default_factory=lambda: _int("HTTP_CONCURRENCY", 12))
+    http_rps: float = field(default_factory=lambda: float(os.getenv("HTTP_RPS", "8") or 8))
     http_timeout: int = field(default_factory=lambda: _int("HTTP_TIMEOUT", 25))
     http_retries: int = field(default_factory=lambda: _int("HTTP_RETRIES", 3))
     user_agent: str = field(

@@ -20,6 +20,7 @@ class BaseSource(ABC):
     columns: List[str] = ["title", "url"]
     interval: float = 600.0  # seconds between successive ticks for this source
     display: str = ""
+    category: str = "misc"
 
     def __init__(self, http: HttpClient) -> None:
         self.http = http

@@ -29,7 +29,14 @@ class HttpClient:
             connector=connector,
             headers={
                 "User-Agent": CONFIG.user_agent,
-                "Accept-Language": "ru,en;q=0.9",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9,ru;q=0.8",
+                "Accept-Encoding": "gzip, deflate, br",
+                "Sec-Fetch-Site": "none",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-User": "?1",
+                "Sec-Fetch-Dest": "document",
+                "Upgrade-Insecure-Requests": "1",
             },
             trust_env=True,
         )

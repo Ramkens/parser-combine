@@ -28,10 +28,13 @@ log = get_logger("bot")
 
 
 HELP_TEXT = (
-    "<b>parser-combine — бесконечный парсер бесплатного</b>\n\n"
+    "<b>parser-combine — бесконечный парсер бесплатного (1000+ источников)</b>\n\n"
     "Команды:\n"
     "<code>/start</code> — запустить парсинг (если не запущен) + статус\n"
-    "<code>/status</code> — статус и счётчики\n"
+    "<code>/status</code> — короткий статус + топ-15 источников и категории\n"
+    "<code>/sources [n]</code> — постраничный список всех источников (по 30)\n"
+    "<code>/cats</code> — список всех категорий\n"
+    "<code>/cat &lt;name&gt; [n]</code> — постраничный список по категории\n"
     "<code>/stop</code> — остановить (полностью)\n"
     "<code>/pause</code> — пауза\n"
     "<code>/resume</code> — продолжить\n"
@@ -124,6 +127,45 @@ def build_dispatcher(harvester: Harvester) -> Dispatcher:
         if not _is_admin(m.from_user.id):
             return
         await _send_snapshot(m, harvester, snapshots_dir)
+
+    @dp.message(Command("sources"))
+    async def on_sources(m: Message) -> None:
+        if not _is_admin(m.from_user.id):
+            return
+        parts = (m.text or "").split()
+        page = 1
+        if len(parts) >= 2:
+            try:
+                page = int(parts[1])
+            except ValueError:
+                page = 1
+        text = harvester.sources_page(page=page, per_page=30)
+        await m.answer(text)
+
+    @dp.message(Command("cats"))
+    async def on_cats(m: Message) -> None:
+        if not _is_admin(m.from_user.id):
+            return
+        await m.answer(harvester.category_summary())
+
+    @dp.message(Command("cat"))
+    async def on_cat(m: Message) -> None:
+        if not _is_admin(m.from_user.id):
+            return
+        parts = (m.text or "").split()
+        if len(parts) < 2:
+            await m.answer("Использование: <code>/cat &lt;name&gt; [page]</code>\n"
+                           "Список категорий: /cats")
+            return
+        category = parts[1]
+        page = 1
+        if len(parts) >= 3:
+            try:
+                page = int(parts[2])
+            except ValueError:
+                page = 1
+        text = harvester.sources_page(page=page, per_page=30, category=category)
+        await m.answer(text)
 
     @dp.callback_query(F.data.startswith("cmd:"))
     async def on_cb(cb: CallbackQuery) -> None:
