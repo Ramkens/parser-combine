@@ -1,16 +1,19 @@
-"""Infinite harvester loop.
+"""Infinite harvester loop, scheduler + worker-pool model.
 
-Each registered source is run on its own schedule. New rows (by stable id)
-are appended to the per-source store. The loop respects pause/resume and
-shuts down cleanly.
+Sources are stored in a min-heap keyed by next-tick time. A small pool of
+worker coroutines pull due sources and run their `tick()`. This lets us
+support tens of thousands of sources without spawning one Task per source.
 """
 from __future__ import annotations
 
 import asyncio
+import heapq
+import os
+import random
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Tuple
 
 from app.core.config import CONFIG
 from app.core.http import HttpClient
@@ -45,6 +48,15 @@ class Harvester:
         self._http: Optional[HttpClient] = None
         self._started_at: Optional[float] = None
 
+        # Scheduling: min-heap of (next_tick_at, seq, source_name)
+        self._heap: List[Tuple[float, int, str]] = []
+        self._heap_lock = asyncio.Lock()
+        self._heap_cv: Optional[asyncio.Condition] = None
+        self._seq = 0
+        self._workers = int(os.getenv("HARVEST_WORKERS", "60"))
+        # _source_instances: lazily created on first tick to save memory
+        self._instances: Dict[str, object] = {}
+
     @property
     def running(self) -> bool:
         return bool(self._tasks) and any(not t.done() for t in self._tasks)
@@ -64,17 +76,36 @@ class Harvester:
         self._paused.set()
         self._http = await HttpClient().__aenter__()
         self._started_at = time.time()
+        # Build heap: stagger first ticks across [0, stagger_window] seconds.
+        n = len(REGISTRY)
+        stagger_window = float(os.getenv("HARVEST_STAGGER_S", "1800"))  # 30 min default
+        rng = random.Random(0xC0FFEE)
+        now = time.time()
         for src in REGISTRY:
-            self._tasks.append(asyncio.create_task(self._run_source(src), name=f"src-{src}"))
-        log.info("harvester started: %s sources", len(self._tasks))
+            jitter = rng.uniform(0.0, stagger_window)
+            heapq.heappush(self._heap, (now + jitter, self._seq, src))
+            self._seq += 1
+        self._heap_cv = asyncio.Condition()
+        # Spawn worker pool
+        for i in range(self._workers):
+            self._tasks.append(asyncio.create_task(self._worker(i), name=f"worker-{i}"))
+        log.info(
+            "harvester started: %s sources, %s workers, stagger %.0fs",
+            n, self._workers, stagger_window,
+        )
 
     async def stop(self) -> None:
         self._stop.set()
+        if self._heap_cv is not None:
+            async with self._heap_cv:
+                self._heap_cv.notify_all()
         for t in self._tasks:
             t.cancel()
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
+        self._heap.clear()
+        self._instances.clear()
         if self._http is not None:
             try:
                 await self._http.__aexit__(None, None, None)
@@ -94,47 +125,82 @@ class Harvester:
             s.ticks = 0
             s.last_tick_added = 0
 
-    async def _run_source(self, src: str) -> None:
-        cls = REGISTRY[src]
-        source = cls(self._http)
-        store = self.store.get(src)
-        st = self.state[src]
-        # stagger first ticks across ~300s to avoid thundering herd at startup
-        stagger = (hash(src) & 0xFFFF) / 0xFFFF * 300.0
-        try:
-            await asyncio.wait_for(self._stop.wait(), timeout=stagger)
-            return
-        except asyncio.TimeoutError:
-            pass
+    async def _pop_due(self) -> Optional[str]:
+        """Wait until next source is due and return its name, or None on stop."""
+        assert self._heap_cv is not None
         while not self._stop.is_set():
-            await self._paused.wait()  # wait if paused
-            tick_started = time.time()
-            added = 0
+            async with self._heap_cv:
+                if not self._heap:
+                    # Should never happen — sources are reinserted after tick.
+                    await self._heap_cv.wait()
+                    continue
+                next_at = self._heap[0][0]
+                wait = max(0.0, next_at - time.time())
+                if wait > 0:
+                    try:
+                        await asyncio.wait_for(self._heap_cv.wait(), timeout=wait)
+                    except asyncio.TimeoutError:
+                        pass
+                    continue
+                _, _, src = heapq.heappop(self._heap)
+                return src
+        return None
+
+    async def _worker(self, idx: int) -> None:
+        while not self._stop.is_set():
+            # Respect pause: don't pull work while paused
+            await self._paused.wait()
             try:
-                async for item_id, row in source.tick():
-                    if self._stop.is_set():
-                        break
-                    if store.add(item_id, row):
-                        added += 1
-                st.last_error = ""
+                src = await self._pop_due()
             except asyncio.CancelledError:
                 raise
-            except Exception as e:
-                st.last_error = f"{type(e).__name__}: {e}"
-                log.warning("[%s] tick failed: %s", src, e)
-            st.last_tick_at = tick_started
-            st.last_tick_added = added
-            st.last_tick_dur = time.time() - tick_started
-            st.ticks += 1
-            log.info("[%s] tick #%s: +%s items in %.1fs (total=%s)",
-                     src, st.ticks, added, st.last_tick_dur, store.total_seen)
-            # sleep until next interval, but stay responsive to stop
-            interval = float(getattr(cls, "interval", 600.0))
-            try:
-                await asyncio.wait_for(self._stop.wait(), timeout=interval)
-                break  # stop signalled
-            except asyncio.TimeoutError:
-                pass
+            if src is None:
+                break
+            await self._do_tick(src)
+            # Reschedule
+            cls = REGISTRY.get(src)
+            if cls is None:
+                continue
+            interval = float(getattr(cls, "interval", 1800.0))
+            # ±10% jitter so equal-interval sources don't bunch up
+            interval *= (1.0 + (random.random() - 0.5) * 0.2)
+            assert self._heap_cv is not None
+            async with self._heap_cv:
+                heapq.heappush(self._heap, (time.time() + interval, self._seq, src))
+                self._seq += 1
+                self._heap_cv.notify()
+
+    async def _do_tick(self, src: str) -> None:
+        cls = REGISTRY[src]
+        source = self._instances.get(src)
+        if source is None:
+            source = cls(self._http)
+            self._instances[src] = source
+        store = self.store.get(src)
+        st = self.state[src]
+        tick_started = time.time()
+        added = 0
+        try:
+            async for item_id, row in source.tick():
+                if self._stop.is_set():
+                    break
+                if store.add(item_id, row):
+                    added += 1
+            st.last_error = ""
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            st.last_error = f"{type(e).__name__}: {e}"[:200]
+            # Quiet by default — too many sources means too many warnings.
+        st.last_tick_at = tick_started
+        st.last_tick_added = added
+        st.last_tick_dur = time.time() - tick_started
+        st.ticks += 1
+        if added > 0 or st.ticks <= 1:
+            log.info(
+                "[%s] tick #%s: +%s items in %.1fs (total=%s)",
+                src, st.ticks, added, st.last_tick_dur, store.total_seen,
+            )
 
     def status_text(self) -> str:
         """Compact summary fitting in a Telegram message."""

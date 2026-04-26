@@ -9,6 +9,7 @@ from app.parsers.factories import make_reddit_sub, make_rss, make_tg_channel
 from app.parsers._data_subreddits import SUBREDDITS
 from app.parsers._data_telegram import CHANNELS
 from app.parsers._data_rss import RSS_FEEDS
+from app.parsers._data_generated import all_generated
 
 # Dedicated, hand-written parsers for richer extraction
 from app.parsers.steam_free import SteamFreeSource
@@ -60,6 +61,13 @@ for ch, cat in CHANNELS:
 # ── RSS / Atom feeds (factory) ─────────────────────────────────────────────
 for name, url, cat, flt, display in RSS_FEEDS:
     interval = 1500.0 + _rng.uniform(-300.0, 1200.0)  # 20–45 min
+    cls = make_rss(url, name, display=display, category=cat, interval=interval, title_must_match=flt)
+    _add(cls)
+
+# ── Programmatically-generated feeds (HN/GNews/Reddit-search/arXiv/Mastodon) ─
+for name, url, cat, flt, display in all_generated():
+    # Long intervals to fit ~5000 sources in the global rate budget.
+    interval = 3600.0 + _rng.uniform(-600.0, 3600.0)  # 50–120 min
     cls = make_rss(url, name, display=display, category=cat, interval=interval, title_must_match=flt)
     _add(cls)
 
