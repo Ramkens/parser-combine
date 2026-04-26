@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: parser-combine
+    env: python
+    plan: free
+    region: frankfurt
+    branch: main
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: python -m app.main
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: ADMIN_TG_ID
+        sync: false
+      - key: PORT
+        value: 10000
+      - key: LOG_LEVEL
+        value: INFO
+      - key: HTTP_CONCURRENCY
+        value: "6"
+      - key: HTTP_RPS
+        value: "4"
