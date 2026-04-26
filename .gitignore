@@ -6,7 +6,7 @@ venv/
 .env
 .env.local
 *.log
-output/
+/output/
 runs/
 .DS_Store
 .idea/
